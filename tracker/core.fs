@@ -6,6 +6,8 @@ cr compiletoflash
 
 \ include ../flib/mecrisp/disassembler-m0.fs
 
+\ include ../flib/mecrisp/multi.fs
+
 include ../flib/stm32l0/uart2.fs
 include ../flib/any/ring.fs
 include ../flib/stm32l0/uart2-irq.fs
@@ -15,7 +17,8 @@ include ../flib/spi/lora1276.fs
 include ../flib/any/varint.fs
 include ../tlib/numprint.fs
 
-include gps.fs
+include ../flib/uart/gps.fs
+include ../flib/i2c/bno055.fs
 
 ( core end, size: ) here dup hex. swap - .
 cornerstone <<<core>>>

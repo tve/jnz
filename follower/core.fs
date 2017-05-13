@@ -13,7 +13,7 @@ include ../flib/stm32l0/uart2-irq.fs
 include ../flib/any/buffers.fs
 include ../flib/spi/lora1276.fs
 include ../flib/any/varint.fs
-include ../flib/i2c/oled.fs
+include ../flib/i2c/ssd1306.fs
 include ../flib/mecrisp/graphics.fs
 include ../tlib/numprint.fs
 

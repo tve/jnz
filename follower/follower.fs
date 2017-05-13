@@ -108,7 +108,7 @@ include hc05.fs
   lcd-init show-logo 
 
   \ LoRa @423.6Mhz
-  432595 $CB rf-init rf!lora125.8
+  432600 $CB rf-init rf!lora250.7
   17 rf-power
   ;
 
@@ -121,9 +121,10 @@ include hc05.fs
       clear rf>oled 
       \ 0  0 127  0 gr:line
       \ 0 63 127 63 gr:line
-      gps-decode gps>oled display
-      gps>uart
-      gpgga>uart2
+      \ gps-decode gps>oled display
+      \ gps>uart
+      \ gpgga>uart2
+      display drop
     then
     empty-stack
     1 ms
