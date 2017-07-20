@@ -1,12 +1,12 @@
 \ burn the final application in flash for self-contained use
 
 <<<core>>>
-compiletoflash
-( main start: ) here dup hex.
+\ include core69.fs
 
-include gps-task.fs
-include imu-task.fs
-include tracker.fs
+cr compiletoflash
+( main start: ) here hex.
+
+include rftemp.fs
 
 : 3blinks 3 0 do led-on 300 ms led-off 300 ms loop ;
 

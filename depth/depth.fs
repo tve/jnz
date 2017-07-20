@@ -1,56 +1,28 @@
-\ application setup and main loop
-\ assumes that the BME280 and TSL4531 sensors are connected to PB6..PB7
+\ measure water depth using MS5837 sensor
 
-300 constant rate     \ seconds between readings
-\ 20 constant rate     \ seconds between readings
+\ 300 constant rate     \ seconds between readings
+ 20 constant rate     \ seconds between readings
   1 variable rate-now \ current rate depending on ACK success
   1 variable missed   \ number of consecutive ACKs missed
 
+PA1 constant vBatPin  \ battery voltage divider
+
 15 constant margin \ target SNR margin in dB 8dB demod + log10(2*RxBw) + 5dB margin
 
-\ include ../flib/spi/rf69.fs
-\ include ../tlib/oled.fs
-\ include ../tlib/numprint.fs
-\ include ../flib/i2c/tsl4531.fs
-
-: highz-gpio
-\ this s(h)aves another 0.6 µA ...
-\ IMODE-ADC PA0  io-mode!   \ debug
-\ IMODE-ADC PA1  io-mode!   \ debug
-  IMODE-ADC PA2  io-mode!
-  IMODE-ADC PA3  io-mode!
-\ IMODE-ADC PA4  io-mode!   \ SSEL
-\ IMODE-ADC PA5  io-mode!   \ SCLK
-\ IMODE-ADC PA6  io-mode!   \ MISO
-\ IMODE-ADC PA7  io-mode!   \ MOSI
-  IMODE-ADC PA8  io-mode!
-\ IMODE-ADC PA9  io-mode!   \ uart TX
-\ IMODE-ADC PA10 io-mode!   \ uart RX
-  IMODE-ADC PA11 io-mode!
-  IMODE-ADC PA12 io-mode!
-  IMODE-ADC PA13 io-mode!
-  IMODE-ADC PA14 io-mode!
-\ IMODE-ADC PA15 io-mode!   \ LED
-  IMODE-ADC PB0  io-mode!
-  IMODE-ADC PB1  io-mode!
-  IMODE-ADC PB3  io-mode!
-  IMODE-ADC PB4  io-mode!
-  IMODE-ADC PB5  io-mode!
-\ IMODE-ADC PB6  io-mode!   \ SCL
-\ IMODE-ADC PB7  io-mode!   \ SDA
-  IMODE-ADC PC14 io-mode!
-  IMODE-ADC PC15 io-mode!
-;
-
 : low-power-sleep ( n -- ) \ sleeps for n * 100ms
-  rf-sleep bme-sleep highz-gpio
-  -adc only-msi
+  rf-sleep highz-gpio
+  adc-deinit only-msi
   0 do stop100ms loop
-  hsi-on adc-init ;
+  OMODE-PP LED io-mode!
+  OMODE-PP PA0 io-mode! \ for debugging
+  hsi-on adc-init spi-init i2c-init ;
+
+LED ios!
 
 1 variable Vcellar \ lowest VCC measured
-: v-cellar adc-vcc Vcellar @ min Vcellar ! ;
-: v-cellar-init adc-vcc Vcellar ! ;
+: vbat vBatPin adc-mv shl ;
+: v-cellar vbat Vcellar @ min Vcellar ! ;
+: v-cellar-init vbat Vcellar ! ;
 
 : n-flash ( n -- ) \ flash LED n times very briefly (100ms)
   0 ?do
@@ -81,13 +53,11 @@
 : show-readings ( vprev vcc tint txpow lux humi pres temp -- ) \ print readings on console
   hwid hex. ." = "
   dup cC>F 4 1 f.n.m ." °F, "
-  1 pick . ." Pa, "
-  2 pick .centi ." %RH, "
-  3 pick . ." lux, "
-  4 pick . ." dBm, "
-  5 pick c>f .n ." °F, "
-  6 pick .milli ." => "
-  7 pick .milli ." V "
+  1 pick .centi ." mBar, "
+  2 pick . ." dBm, "
+  3 pick c>f .n ." °F, "
+  4 pick .milli ." => "
+  5 pick .milli ." V "
   ;
 
 : rf>uart ( len -- len )  \ print reception parameters
@@ -105,8 +75,8 @@
     hold
   v> ;
 
-: send-packet ( vprev vcc tint txpow lux humi pres temp -- )
-  <pkt  hwid 9 0 do >+pkt loop  2 pkt>
+: send-packet ( vprev vcc tint txpow depth temp -- )
+  <pkt  hwid 7 0 do +pkt loop  3 pkt>
   PA0 ios!
   $80 rf-send \ request ack
   v-cellar ;
@@ -145,18 +115,18 @@
   rf-toggle-power rate!slow missed++ ;
 
 : process-ack ( n -- )
-    rx-connected? if              \ print info if connected
-      ." RF69 " rf>uart
-      dup 0 do rf.buf i + c@ h.2 loop cr
-    then
-    if rf.buf c@ ?dup if          \ fetch SNR
-      rf-adj-power                \ adjust power
-    then then
-    rf-correct                    \ correct frequency
-    rate!normal
-    0 missed !
-    LED ioc! 1 low-power-sleep LED ios!     \ brief LED blink
-    ;
+  rx-connected? if              \ print info if connected
+    ." RF69 " rf>uart
+    dup 0 do rf.buf i + c@ h.2 loop cr
+  then
+  if rf.buf c@ ?dup if          \ fetch SNR
+    rf-adj-power                \ adjust power
+  then then
+  rf-correct                    \ correct frequency
+  rate!normal
+  0 missed !
+  LED ioc! 1 low-power-sleep LED ios!     \ brief LED blink
+  ;
 
 : get-ack ( -- ) \ wait a bit to receive an ACK, adjust rate-now accordingly
   40 rf-ack?
@@ -170,30 +140,41 @@
   PA0 ios! ;
 
 : init-hw
-  2.1MHz 1000 systick-hz
+  \ 2.1MHz 1000 systick-hz
   lptim-init i2c-init adc-init
 
   OMODE-PP PA0 io-mode! \ for debugging
-  OMODE-PP PA1 io-mode! \ for debugging
+  IMODE-ADC vBatPin io-mode!
 
   912500000 rf.freq ! 6 rf.group ! \ 61 rf.nodeid !
   rf-init $0F rf-power \ rf. cr
 
-  bme-init drop bme-calib
-  tsl-init drop tsl-sleep
+  ms5837-init drop
+  ms5837.
 
   v-cellar-init
+  ;
+
+: oversample ( -- pres temp )
+  0 0 \ initial values
+  16 0 do \ 16x oversample
+  ms5837-convert1 ms
+  ms5837-convert2 ms
+  ms5837-data
+  d+ \ sum
+  loop
+  4 arshift swap ( pres 16*temp )
+  4 arshift ( pres temp )
   ;
 
 : iter
   Vcellar @                    ( vprev )
   v-cellar-init
-  adc-vcc adc-temp             ( vprev vcc tint )
+  vbat adc-temp                ( vprev vcc tint )
   rf@power 18 -                ( vprev vcc tint txpow )
   PA0 ios!
-  tsl-convert 100 / 1+ low-power-sleep tsl-data
-  bme-convert 100 / 1+ low-power-sleep bme-data bme-calc
-  ( vprev vcc tint txpow lux humi pres temp )
+  oversample
+  ( vprev vcc tint txpow pres temp )
 
   rx-connected? if show-readings cr 1 ms then
   PA0 ioc!
@@ -206,10 +187,10 @@
 
 : lpt \ low power test
   ." ... low power test..." cr
-  init-hw LED ios!
+  init-hw LED ios! 400 ms
   rf-sleep
   begin
-    PA0 ios! 10 ms PA0 ioc!
+    \ PA0 ios! 10 ms PA0 ioc!
     10 low-power-sleep
   again
   ;
@@ -217,12 +198,9 @@
 : main
   ." ... starting rftemp..." cr
   init-hw LED ios!
-  PA1 ios!
   begin
     iter
-    PA1 ioc!
     rate-now @ 10 * low-power-sleep
-    OMODE-PP PA0 io-mode! \ for debugging
-    OMODE-PP PA1 io-mode! \ for debugging
-    PA1 ios!
   key? until ;
+
+." Type main to start..."
