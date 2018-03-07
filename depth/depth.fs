@@ -1,9 +1,16 @@
 \ measure water depth using MS5837 sensor
 
-\ 300 constant rate     \ seconds between readings
  20 constant rate     \ seconds between readings
   1 variable rate-now \ current rate depending on ACK success
   1 variable missed   \ number of consecutive ACKs missed
+120 variable blinks   \ how often to blink LED before going quiet
+
+\ variables to skip reporting when values don't change
+100 constant dpres    \ delta pressure (centi-mbar) below which packet is skipped
+  0 variable ppres    \ previous pressure
+  0 variable ppres2   \ previous pressure #2
+  0 variable nskip    \ number of packet skipped
+ 30 constant max-skip \ max packets to skip
 
 PA1 constant vBatPin  \ battery voltage divider
 
@@ -50,14 +57,16 @@ LED ios!
   0 swap 0,018 f* 0 32 d+ 
   ;
 
-: show-readings ( vprev vcc tint txpow lux humi pres temp -- ) \ print readings on console
+: show-readings ( vprev vcc tint txpow pres temp pres2 temp2 -- ) \ print readings on console
   hwid hex. ." = "
-  dup cC>F 4 1 f.n.m ." °F, "
-  1 pick .centi ." mBar, "
-  2 pick . ." dBm, "
-  3 pick c>f .n ." °F, "
-  4 pick .milli ." => "
-  5 pick .milli ." V "
+  dup cC>F 4 1 f.n.m ." °F(a), "
+  1 pick .centi ." mBar(a), "
+  2 pick cC>F 4 1 f.n.m ." °F(w), "
+  3 pick .centi ." mBar(w), "
+  4 pick . ." dBm, "
+  5 pick c>f .n ." °F, "
+  6 pick .milli ." => "
+  7 pick .milli ." V "
   ;
 
 : rf>uart ( len -- len )  \ print reception parameters
@@ -75,8 +84,8 @@ LED ios!
     hold
   v> ;
 
-: send-packet ( vprev vcc tint txpow depth temp -- )
-  <pkt  hwid 7 0 do +pkt loop  3 pkt>
+: send-packet ( vprev vcc tint txpow pres temp pres2 temp2 -- )
+  <pkt  hwid 9 0 do +pkt loop  3 pkt>
   PA0 ios!
   $80 rf-send \ request ack
   v-cellar ;
@@ -125,22 +134,29 @@ LED ios!
   rf-correct                    \ correct frequency
   rate!normal
   0 missed !
-  LED ioc! 1 low-power-sleep LED ios!     \ brief LED blink
+  blinks @ ?dup if
+    1- blinks !
+    LED ioc! 2 low-power-sleep LED ios!     \ brief LED blink
+  then
   ;
 
-: get-ack ( -- ) \ wait a bit to receive an ACK, adjust rate-now accordingly
+: get-ack ( -- f ) \ wait a bit to receive an ACK, adjust rate-now accordingly
   40 rf-ack?
   PA0 ioc!
   v-cellar rf-sleep
-  ?dup if process-ack
-  else missed @ ?dup if
-    8 > if no-ack-slow else no-ack-continue then
-  else no-ack-repeat
-  then then
+  dup if
+    dup process-ack
+  else
+    missed @ ?dup if
+      8 > if no-ack-slow else no-ack-continue then
+    else
+      no-ack-repeat
+    then
+  then
   PA0 ios! ;
 
 : init-hw
-  \ 2.1MHz 1000 systick-hz
+  2.1MHz 1000 systick-hz
   lptim-init i2c-init adc-init
 
   OMODE-PP PA0 io-mode! \ for debugging
@@ -151,6 +167,7 @@ LED ios!
 
   ms5837-init drop
   ms5837.
+  bmp-init drop
 
   v-cellar-init
   ;
@@ -167,22 +184,65 @@ LED ios!
   4 arshift ( pres temp )
   ;
 
+: atmospheric ( -- pres temp )
+  bmp-convert1 ms
+  bmp-convert2 ms
+  bmp-data swap
+  ;
+
+: pres_diff ( pres1 ppres -- f ) \ return true if pressure difference needs reporting
+  - abs dpres u> ;
+: pres_send ( pres1 pres2 -- f ) \ return true if one pressure diff needs reporting
+  ppres2 @ pres_diff swap
+  ppres @ pres_diff or ;
+
+: t
+  2.1MHz 1000 systick-hz
+  lptim-init i2c-init adc-init
+  bmp-init .
+  atmospheric
+  .v
+  ;
+
 : iter
   Vcellar @                    ( vprev )
   v-cellar-init
   vbat adc-temp                ( vprev vcc tint )
   rf@power 18 -                ( vprev vcc tint txpow )
   PA0 ios!
-  oversample
-  ( vprev vcc tint txpow pres temp )
+  oversample                   ( vprev vcc tint txpow pres temp )
+  atmospheric                  ( vprev vcc tint txpow pres temp pres2 temp2 )
 
   rx-connected? if show-readings cr 1 ms then
-  PA0 ioc!
-  send-packet
-  PA0 ios!
-  get-ack
+
+  \ send if the pressure has changed enough
+  3 pick 2 pick pres_send nskip @ max-skip >= or if
+    \ save pressures we're sending
+    over >r  3 pick >r ( r: pres2 pres )
+    \ send packet and wait for ACK
+    PA0 ioc!
+    send-packet
+    PA0 ios!
+    get-ack if
+      \ got ACK, truly save pressures and reset nskip
+      0 nskip !
+      r> ppres !
+      r> ppres2 !
+    else
+      rdrop rdrop
+    then
+  else
+    2drop 2drop 2drop 2drop
+    1 nskip +!
+    ." skipped " nskip @ . cr
+  then
   empty-stack
   v-cellar
+  ;
+
+: chk-lipo \ check whether Vcellar shows that battery is dead
+  Vcellar @
+  3300 < if begin stop10s again then
   ;
 
 : lpt \ low power test
@@ -200,6 +260,7 @@ LED ios!
   init-hw LED ios!
   begin
     iter
+    chk-lipo
     rate-now @ 10 * low-power-sleep
   key? until ;
 

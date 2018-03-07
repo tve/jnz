@@ -1,56 +1,30 @@
 \ application setup and main loop
 \ assumes that the MCP9808 temp sensor is on i2c
 
-300 constant rate     \ seconds between readings
+ 60 constant rate     \ seconds between readings
  20 constant rate     \ seconds between readings
   1 variable rate-now \ current rate depending on ACK success
   1 variable missed   \ number of consecutive ACKs missed
+120 variable blinks   \ how often to blink LED before going quiet
+
+PA1 constant vBatPin  \ battery voltage divider
 
 15 constant margin \ target SNR margin in dB 8dB demod + log10(2*RxBw) + 5dB margin
-
-\ include ../flib/spi/rf69.fs
-\ include ../tlib/oled.fs
-\ include ../tlib/numprint.fs
-\ include ../flib/i2c/tsl4531.fs
-
-: highz-gpio
-\ this s(h)aves another 0.6 µA ...
-\ IMODE-ADC PA0  io-mode!   \ debug
-\ IMODE-ADC PA1  io-mode!   \ debug
-  IMODE-ADC PA2  io-mode!
-  IMODE-ADC PA3  io-mode!
-  IMODE-ADC PA4  io-mode!   \ SSEL on jz1
-  IMODE-ADC PA5  io-mode!   \ SCLK on jz1
-  IMODE-ADC PA6  io-mode!   \ MISO on jz1
-  IMODE-ADC PA7  io-mode!   \ MOSI on jz1
-\ IMODE-ADC PA8  io-mode!   \ LED on jz4
-\ IMODE-ADC PA9  io-mode!   \ uart TX
-\ IMODE-ADC PA10 io-mode!   \ uart RX
-  IMODE-ADC PA11 io-mode!
-  IMODE-ADC PA12 io-mode!
-  IMODE-ADC PA13 io-mode!
-  IMODE-ADC PA14 io-mode!
-\ IMODE-ADC PA15 io-mode!   \ LED on jz1, SSEL on jz4
-  IMODE-ADC PB0  io-mode!
-  IMODE-ADC PB1  io-mode!
-\ IMODE-ADC PB3  io-mode!   \ SPI on jz4
-\ IMODE-ADC PB4  io-mode!   \ SPI on jz4
-\ IMODE-ADC PB5  io-mode!   \ SPI on jz4
-\ IMODE-ADC PB6  io-mode!   \ SCL
-\ IMODE-ADC PB7  io-mode!   \ SDA
-  IMODE-ADC PC14 io-mode!
-  IMODE-ADC PC15 io-mode!
-;
 
 : low-power-sleep ( n -- ) \ sleeps for n * 100ms
   rf-sleep highz-gpio
   adc-deinit only-msi
   0 do stop100ms loop
-  hsi-on adc-init ;
+  OMODE-PP LED io-mode!
+  OMODE-PP PA0 io-mode! \ for debugging
+  hsi-on adc-init spi-init i2c-init ;
+
+LED ios!
 
 1 variable Vcellar \ lowest VCC measured
-: v-cellar adc-vcc Vcellar @ min Vcellar ! ;
-: v-cellar-init adc-vcc Vcellar ! ;
+: vbat vBatPin adc-mv shl ;
+: v-cellar vbat Vcellar @ min Vcellar ! ;
+: v-cellar-init vbat Vcellar ! ;
 
 : n-flash ( n -- ) \ flash LED n times very briefly (100ms)
   0 ?do
@@ -141,6 +115,12 @@
 : no-ack-slow ( -- ) \ missed a pile of ACKs, toggle high/med power and go slow
   rf-toggle-power rate!slow missed++ ;
 
+: do-blink
+  blinks @ ?dup if
+    1- blinks !
+    LED ioc! 100 ms LED ios!     \ brief LED blink
+  then ;
+
 : process-ack ( n -- )
     rx-connected? if              \ print info if connected
       ." RF69 " rf>uart
@@ -152,7 +132,7 @@
     rf-correct                    \ correct frequency
     rate!normal
     0 missed !
-    \ LED ioc! 1 low-power-sleep LED ios!     \ brief LED blink
+    do-blink
     ;
 
 : get-ack ( -- ) \ wait a bit to receive an ACK, adjust rate-now accordingly
@@ -171,7 +151,7 @@
   lptim-init i2c-init adc-init
 
   OMODE-PP PA0 io-mode! \ for debugging
-  OMODE-PP PA1 io-mode! \ for debugging
+  IMODE-ADC vBatPin io-mode!
 
   912500000 rf.freq ! 6 rf.group ! \ 61 rf.nodeid !
   rf-init $0F rf-power \ rf. cr
@@ -184,7 +164,7 @@
 : iter
   Vcellar @                    ( vprev )
   v-cellar-init
-  adc-vcc adc-temp             ( vprev vcc tint )
+  vbat adc-temp                ( vprev vcc tint )
   rf@power 18 -                ( vprev vcc tint txpow )
   PA0 ios!
   0 0 0 \ lux humi pres
@@ -202,7 +182,7 @@
 
 : chk-lipo \ check whether Vcellar shows that battery is dead
   Vcellar @
-  3100 < if begin stop10s again then
+  3300 < if begin stop10s again then
   ;
   
 : lpt \ low power test
@@ -218,13 +198,8 @@
 : main
   ." ... starting rftemp..." cr
   init-hw LED ios!
-  PA1 ios!
   begin
     iter
     chk-lipo
-    PA1 ioc!
     rate-now @ 10 * low-power-sleep
-    OMODE-PP PA0 io-mode! \ for debugging
-    OMODE-PP PA1 io-mode! \ for debugging
-    PA1 ios!
   key? until ;

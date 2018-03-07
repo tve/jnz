@@ -1,5 +1,8 @@
 \ IMU tasks
 
+include ../tlib/tcore.fs
+include butter.fs
+
 13 constant FMT:IMU \ packet format for IMU info
 PA12 constant RDY   \ LED to show that calibration is done
 
@@ -81,13 +84,18 @@ imumax imulen *
   bno-data \ fetch current data
   bno.data 8 + \ address of accelerometer data
   bno.accum ( d-addr s-addr )
-  over h@ 16 lshift 16 arshift over +!  4 + swap 2+ swap
-  over h@ 16 lshift 16 arshift over +!  4 + swap 2+ swap
-  over h@ 16 lshift 16 arshift over +!  4 + swap 2+ swap
+  over hs@ over +!  4 + swap 2+ swap
+  over hs@ over +!  4 + swap 2+ swap
+  over hs@ over +!  4 + swap 2+ swap
   2drop
   1 bno.cnt +!
   ;
 
+\ The imu-sampler task samples the IMU at its max frequency, which is 100Hz and
+\ accumulates the acceleromoter part of the samples. The imu-task then periodically
+\ averages the samples, puts them through a butterworth high-pass filter to remove
+\ DC components, and saves them for transmission. (The orientations samples are not
+\ averaged: the most recent one is taken by imu-task.)
 task: imu-sampler
 : imu-sloop& ( -- )
   calib-restore
@@ -111,6 +119,30 @@ task: imu-sampler
   bno.accum 3 cells 0 fill
   0 bno.cnt ! ;
 
+\ variables to put accelerometer through butterworth filter
+3 bw-len * buffer: bno.bw
+
+: imu-data.
+  bno.data ." BNO:("
+  4 0 do dup h@ 16 lshift 16 arshift . 2+ loop \ print quaternions
+  ." ) a("
+  3 0 do dup h@ 16 lshift 16 arshift . 2+ loop \ print accel
+  drop
+  [char] ) emit cr ;
+
+: imu-butter ( -- ) \ run accelerometer data through butterworth filter
+  \ imu-data.
+  bno.data 8 + \ addr of accelerometer data
+  3 0 do ( accel@ )
+    0 over hs@ ( accel@[u] accel[f] )
+    bno.bw i bw-len * + ( accel@[u] accel[f] state[u] )
+    bw-step ( accel@[u] filtered[f] )
+    nip over h! \ save filtered value ("integer" part only)
+    2+
+  loop drop
+  \ imu-data.
+  ;
+
 \ ===== IMU task
 
 task: imu-task
@@ -122,6 +154,7 @@ task: imu-task
   imu-sloop&
   OMODE-PP RDY io-mode!         \ init LED pin
   RDY ios! 100 ms RDY ioc!      \ brief LED flash
+  bno.bw 3 bw-len * 0 fill      \ init butterworth filter
   imu-task activate
 
   begin
@@ -129,6 +162,7 @@ task: imu-task
     millis dup bno-calib? ( millis millis calib )
     bno.cnt @ dup 9 < if . ." IMU samples " cr else drop then
     imu-average
+    imu-butter \ apply butterworth filter to data
     next-imu-buffer dup >r fill-imu-buffer ( millis R:addr )
     r@ record-imu-buffer ( millis R:addr )
     r> print-imu-buffer ( millis )
